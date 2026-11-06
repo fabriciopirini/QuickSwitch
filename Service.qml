@@ -10,33 +10,35 @@ import "logic.js" as Logic
 Item {
     id: root
 
-    readonly property string shortAppId: "ewweberlin.quickswitch"
+    readonly property string shortAppId: "pirini.cmd-tab"
 
     property bool open: false
-    property var windows: []
-    property var groups: []
+    property var windows: []  // one entry per app, in cycle order
     property int selected: 0
     property bool sawKeyEvent: false
     property bool modsHeld: false
     property string pendingAddr: ""
     property real lastRefreshTime: 0
+    // Tile and icon size (logical px) of one app in the strip.
+    readonly property int tileSize: 128
+    readonly property int iconSize: 96
 
     // Hyprland bridge. The bindings in ~/.config/hypr/bindings.lua only route
-    // SUPER+TAB here while quickswitch_loaded is set (otherwise the Omarchy
+    // SUPER+TAB here while cmdtab_loaded is set (otherwise the Omarchy
     // default "Next workspace" applies), and all in-switcher keys live in the
-    // "quickswitch" submap, which is only active while the strip is open. That
+    // "cmdtab" submap, which is only active while the strip is open. That
     // keeps SUPER+Q/arrows untouched outside the switcher.
     readonly property string leaveSubmap:
-        'if hl.get_current_submap() == "quickswitch" then hl.dispatch(hl.dsp.submap("reset")) end'
+        'if hl.get_current_submap() == "cmdtab" then hl.dispatch(hl.dsp.submap("reset")) end'
 
     function hlEval(code) { Quickshell.execDetached(["hyprctl", "eval", code]) }
-    function announce() { hlEval('quickswitch_loaded = true; ' + leaveSubmap) }
+    function announce() { hlEval('cmdtab_loaded = true; ' + leaveSubmap) }
 
     Component.onCompleted: announce()
-    Component.onDestruction: hlEval('quickswitch_loaded = false; ' + leaveSubmap)
+    Component.onDestruction: hlEval('cmdtab_loaded = false; ' + leaveSubmap)
 
     onOpenChanged: {
-        if (open) Hyprland.dispatch('hl.dsp.submap("quickswitch")')
+        if (open) Hyprland.dispatch('hl.dsp.submap("cmdtab")')
         else hlEval(leaveSubmap)
     }
 
@@ -62,35 +64,28 @@ Item {
         id: focusTimer
         interval: 110
         onTriggered: {
-            if (root.pendingAddr)
+            if (root.pendingAddr) {
+                // Floating windows stay under their siblings on focus alone; raise the target too.
                 Hyprland.dispatch('hl.dsp.focus({ window = "address:' + root.pendingAddr + '" })')
+                Hyprland.dispatch('hl.dsp.window.bring_to_top({ window = "address:' + root.pendingAddr + '" })')
+            }
             root.pendingAddr = ""
         }
     }
 
-    // SUPER+Q quits the highlighted app but keeps the switcher open (SUPER is
-    // still held). We close via the Lua dispatcher (matches Omarchy's own
-    // close-all helper) and then re-fetch the window list so the closed window
-    // disappears; focus is only switched on SUPER release.
+    // SUPER+Q quits the highlighted app (every window of it) but keeps the
+    // switcher open (SUPER is still held). We close via the Lua dispatcher
+    // (matches Omarchy's own close-all helper) and then re-fetch the app list so
+    // the quit app disappears; focus is only switched on SUPER release.
     function quitSelected() {
         const entry = windows.length ? windows[selected] : null
-        if (!entry || !entry.address) return
-        const addr = entry.address
-        console.log("[task-switch] quitSelected addr=", addr, "cls=", entry.cls)
+        if (!entry || !entry.addresses.length) return
+        console.log("[task-switch] quitSelected cls=", entry.cls, "windows=", entry.addresses.length)
         root.lastRefreshTime = Date.now()
-        quitProc.command = ["hyprctl", "dispatch",
-            'hl.dsp.window.close({ window = "address:' + addr + '" })']
-        quitProc.running = true
-    }
-
-    Process {
-        id: quitProc
-        stdout: StdioCollector { onStreamFinished: console.log("[task-switch] quit stdout:", text.trim()) }
-        stderr: StdioCollector { onStreamFinished: console.log("[task-switch] quit stderr:", text.trim()) }
-        onExited: {
-            console.log("[task-switch] quitProc exited code=", exitCode)
-            refreshAfterQuit.running = true
-        }
+        for (const addr of entry.addresses)
+            Quickshell.execDetached(["hyprctl", "dispatch",
+                'hl.dsp.window.close({ window = "address:' + addr + '" })'])
+        refreshAfterQuit.restart()
     }
 
     // Keep the overlay mounted (open stays true) and refresh the list.
@@ -102,26 +97,11 @@ Item {
         }
     }
 
-    // Keep the Qt-side toplevel model in sync with the compositor so that
-    // reloaded/reopened windows map to a current (fresh) wayland handle. Without
-    // a refresh, Hyprland.toplevels still holds the sealed toplevel of the
-    // pre-reload window, so its new address isn't found and the preview reuses
-    // a stale (dead) handle.
     Connections {
         target: Hyprland
         function onRawEvent(event) {
-            switch (event.name) {
-            case "configreloaded":
-                // A config reload recreates the Lua state; re-announce.
-                root.announce()
-                break
-            case "openwindow":
-            case "closewindow":
-            case "changefloatingmode":
-            case "movewindow":
-                Hyprland.refreshToplevels()
-                break
-            }
+            // A config reload recreates the Lua state; re-announce.
+            if (event.name === "configreloaded") root.announce()
         }
     }
 
@@ -139,7 +119,7 @@ Item {
         }
     }
 
-    // In-switcher keys. These are bound only inside the "quickswitch" submap
+    // In-switcher keys. These are bound only inside the "cmdtab" submap
     // (see bindings.lua), so they never shadow the normal SUPER bindings.
     function stepFromKey(forward) {
         if (!root.open) return
@@ -184,47 +164,10 @@ Item {
     function fillWindows(clients) {
         console.log("[task-switch] fillWindows called, n=", Array.isArray(clients) ? clients.length : "not-array")
         if (!Array.isArray(clients)) return
-        const ordered = Logic.orderClients(clients)
-        if (!ordered.length) return
+        const apps = Logic.groupByApp(Logic.orderClients(clients))
+        if (!apps.length) return
 
-        const byAddr = {}
-        for (const tl of (Hyprland.toplevels.values || [])) {
-            const ipc = tl.lastIpcObject
-            if (ipc && ipc.address) byAddr[ipc.address] = tl
-        }
-
-        const cache = {}
-        for (const w of root.windows) cache[w.address] = w
-
-        const records = []
-        for (const c of ordered) {
-            const addr = c.address
-            const tl = byAddr[addr]
-            const prev = cache[addr]
-            const rec = prev && !prev.dead ? prev : {
-                address: addr,
-                cls: c.class || c.initialClass || "",
-                title: c.title || "-",
-                workspaceId: c.workspace ? c.workspace.id : -1,
-                workspaceName: c.workspace ? c.workspace.name : "-",
-                fhid: c.focusHistoryID === undefined ? 0 : c.focusHistoryID,
-                dead: false,
-                handle: null
-            }
-            rec.title = c.title || "-"
-            rec.cls = c.class || c.initialClass || ""
-            // Never screencopy password managers, auth prompts or private
-            // browsing windows; they fall back to the app icon.
-            rec.sensitive = Logic.isSensitive(rec.cls, rec.title)
-                || Logic.isSensitive(c.initialClass, c.initialTitle)
-            rec.handle = (tl && !rec.sensitive) ? tl.wayland : null
-            rec.workspaceId = c.workspace ? c.workspace.id : rec.workspaceId
-            rec.workspaceName = c.workspace ? c.workspace.name : rec.workspaceName
-            records.push(rec)
-        }
-
-        root.windows = records
-        root.groups = Logic.groupByWorkspace(ordered)
+        root.windows = apps
         root.selected = 0
         root.sawKeyEvent = false
         root.modsHeld = false
@@ -233,6 +176,10 @@ Item {
 
     function iconPathFor(cls, title) {
         return Logic.iconPathFor(DesktopEntries, Quickshell, cls, title)
+    }
+
+    function appNameFor(cls) {
+        return Logic.appNameFor(DesktopEntries, cls)
     }
 
     LazyLoader {
@@ -351,9 +298,9 @@ Item {
                             const n = root.windows.length
                             if (!n) return 0
                             const spacing = Style.spacing.panelPadding
-                            const cardW = 180
-                            const maxCards = Math.floor((panel.width * 0.85 - 2 * padding + spacing) / (cardW + spacing))
-                            return 2 * padding + Math.min(n, maxCards) * cardW + Math.max(0, Math.min(n, maxCards) - 1) * spacing
+                            const tileW = root.tileSize
+                            const maxTiles = Math.floor((panel.width * 0.85 - 2 * padding + spacing) / (tileW + spacing))
+                            return 2 * padding + Math.min(n, maxTiles) * tileW + Math.max(0, Math.min(n, maxTiles) - 1) * spacing
                         }
                         width: contentWidth
 
@@ -366,146 +313,30 @@ Item {
                                 readonly property bool isSelected: root.selected === index
                                 readonly property bool hovered: hover.hovered && panel.hoverArmed
                                 // Also fires when hover gets armed while the
-                                // pointer already rests on this card.
+                                // pointer already rests on this tile.
                                 onHoveredChanged: if (hovered) root.selected = index
 
-                                width: 180
-                                height: 130
+                                width: root.tileSize
+                                height: root.tileSize
 
-                                scale: (isSelected || hovered) ? 1.05 : 1.0
-                                opacity: isSelected ? 1.0 : 0.85
-                                transformOrigin: Item.Center
-
-                                Behavior on scale {
-                                    NumberAnimation { duration: 90; easing.type: Easing.OutQuad }
-                                }
-                                Behavior on opacity {
-                                    NumberAnimation { duration: 90; easing.type: Easing.OutQuad }
-                                }
-
-                                BorderSurface {
-                                    id: frame
+                                // Omarchy selection affordance: the menu's selected
+                                // fill and border behind the highlighted app.
+                                Rectangle {
                                     anchors.fill: parent
                                     radius: Style.cornerRadius
-                                    color: Color.popups.background
-                                    clip: true
-                                    borderSpec: Border.surfaceSpec(
-                                        "popups", "border",
-                                        isSelected || hovered ? Color.menu.selectedBorder : Color.popups.border,
-                                        2)
+                                    color: isSelected ? Color.menu.selectedBackground : "transparent"
+                                    border.width: isSelected ? 2 : 0
+                                    border.color: Color.menu.selectedBorder
+                                }
 
-                                    // Omarchy selection/hover affordance: a subtle
-                                    // fill highlight instead of a hard-coded border.
-                                    Rectangle {
-                                        anchors.fill: parent
-                                        visible: isSelected || hovered
-                                        color: Color.menu.selectedBackground
-                                    }
-
-                                    // Snapshot taken while the switcher opens. The
-                                    // screencopy recording context takes a moment to
-                                    // establish, and its first delivered buffer is
-                                    // often empty/uninitialized. So: keep requesting
-                                    // frames while open, and once the first content
-                                    // frame arrives keep grabbing a short "settle"
-                                    // burst so a real (populated) frame replaces the
-                                    // blank one, then freeze. Cards are recreated
-                                    // fresh on every open (the panel is torn down when
-                                    // closed), so there is no cache across opens.
-                                    ScreencopyView {
-                                        id: thumb
-                                        anchors.fill: parent
-                                        anchors.margins: 2
-                                        z: 3
-                                        captureSource: win ? win.handle : null
-                                        live: false
-                                        paintCursor: false
-                                        visible: win && win.handle && hasContent
-
-                                        // Whether a real snapshot has been frozen for
-                                        // this open. Reset automatically because the
-                                        // card is recreated fresh on each open.
-                                        property bool frozen: false
-                                        property int settleTicks: 0
-
-                                        // Grab a frame as soon as a source is set
-                                        // (kicks off context setup immediately).
-                                        onCaptureSourceChanged: {
-                                            if (thumb.captureSource) {
-                                                thumb.captureFrame()
-                                                thumb.settleTicks = 0
-                                                thumb.frozen = false
-                                            }
-                                        }
-
-                                        // Runs whenever the switcher is open and a
-                                        // source exists — driver via a bound
-                                        // `running`, so a freshly-added window whose
-                                        // onCaptureSourceChanged may not fire still
-                                        // gets captured. Stops after a settle burst
-                                        // once real content is present.
-                                        Timer {
-                                            id: grabber
-                                            interval: 90
-                                            repeat: true
-                                            running: root.open && !!thumb.captureSource && !thumb.frozen
-                                            onTriggered: {
-                                                thumb.captureFrame()
-                                                if (thumb.hasContent) {
-                                                    thumb.settleTicks += 1
-                                                    if (thumb.settleTicks >= 4) {
-                                                        thumb.frozen = true
-                                                        thumb.settleTicks = 0
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-
-                                    // Fallback while content loads / when a window
-                                    // can't be captured: dim area + centered icon.
-                                    Rectangle {
-                                        anchors.fill: parent
-                                        color: Qt.alpha(Color.foreground, 0.05)
-                                    }
-
-                                    Rectangle {
-                                        id: captureFallback
-                                        anchors.fill: parent
-                                        visible: !thumb.visible
-                                        color: Color.popups.background
-
-                                        Image {
-                                            anchors.centerIn: parent
-                                            width: 64
-                                            height: 64
-                                            sourceSize.width: 64
-                                            sourceSize.height: 64
-                                            fillMode: Image.PreserveAspectFit
-                                            source: win ? root.iconPathFor(win.cls, win.title) : ""
-                                        }
-                                    }
-
-                                    Rectangle {
-                                        id: iconBadge
-                                        anchors.left: parent.left
-                                        anchors.top: parent.top
-                                        anchors.margins: Style.spacing.md
-                                        width: 56
-                                        height: 56
-                                        radius: Style.cornerRadius
-                                        color: "transparent"
-                                        z: 4
-
-                                        Image {
-                                            anchors.fill: parent
-                                            anchors.margins: 4
-                                            sourceSize.width: 48
-                                            sourceSize.height: 48
-                                            fillMode: Image.PreserveAspectFit
-                                            source: win ? root.iconPathFor(win.cls, win.title) : ""
-                                        }
-                                    }
+                                Image {
+                                    anchors.centerIn: parent
+                                    width: root.iconSize
+                                    height: root.iconSize
+                                    sourceSize.width: root.iconSize
+                                    sourceSize.height: root.iconSize
+                                    fillMode: Image.PreserveAspectFit
+                                    source: win ? root.iconPathFor(win.cls, win.title) : ""
                                 }
 
                                 HoverHandler {
@@ -534,10 +365,10 @@ Item {
                         elide: Text.ElideRight
                         horizontalAlignment: Text.AlignHCenter
                         textFormat: Text.PlainText
-                        text: root.windows.length ? root.windows[root.selected].title : ""
+                        text: root.windows.length ? root.appNameFor(root.windows[root.selected].cls) : ""
                         color: Color.popups.text
                         font.family: Style.font.family
-                        font.pixelSize: Style.font.body
+                        font.pixelSize: Style.font.heading
                         font.weight: Font.DemiBold
                     }
 

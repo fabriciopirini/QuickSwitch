@@ -1,17 +1,17 @@
 {
   "schemaVersion": 1,
-  "id": "ewweberlin.quickswitch",
-  "name": "QuickSwitch",
+  "id": "pirini.cmd-tab",
+  "name": "Cmd+Tab",
   "version": "1.0.0",
-  "author": "ewweberlin",
+  "author": "fabriciopirini",
   "license": "MIT",
-  "description": "macOS-style task/window switcher with window previews. Hold SUPER, tap TAB to cycle, release SUPER to switch to the selected window's workspace. SUPER+Q quits the highlighted app.",
+  "description": "macOS-style app switcher: hold SUPER, tap TAB to cycle through one large icon per app, release SUPER to switch. Click an icon to jump to it. SUPER+Q quits the highlighted app.",
   "kinds": ["service"],
   "keepLoaded": true,
   "entryPoints": {"service": "Service.qml"},
   "service": {
-    "displayName": "QuickSwitch",
-    "description": "macOS-style task/window switcher",
+    "displayName": "Cmd+Tab",
+    "description": "macOS-style app switcher",
     "category": "Desktop",
     "allowMultiple": false
   }

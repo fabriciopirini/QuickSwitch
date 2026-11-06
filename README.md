@@ -1,58 +1,57 @@
-# QuickSwitch — macOS-style task switcher for Omarchy/Hyprland
+# Cmd+Tab: macOS-style app switcher for Omarchy
 
-A beautiful, themed window/task switcher in the style of the macOS app switcher, built as an
+An app switcher in the style of macOS Cmd+Tab, built as an
 [Omarchy](https://omarchy.org/) shell plugin (QML hosted by the long-running
 `omarchy-shell` Quickshell process).
 
-<img width="2248" height="722" alt="screenshot-2026-09-04_03-21-39" src="https://github.com/user-attachments/assets/0e77e772-13e6-4798-ae91-3ad1c6844d77" />
-
-<br><br>
-
-☕ **If you like this project, buy me a coffee** → [paypal.me](https://paypal.me/EwgeniWeber)
+Forked from [ewweberlin/QuickSwitch](https://github.com/ewweberlin/QuickSwitch) (MIT).
+The original shows a snapshot per window. This fork shows one large icon per
+app, like macOS, and the app's name under the selection.
 
 ## Features
 
-- **SUPER+TAB** opens the switcher.
-- A **quick SUPER+TAB tap** jumps straight to the previously used window
-  without flashing the overlay; tap again to jump back (like macOS Cmd+Tab).
-  The strip only appears once SUPER is held for a moment.
-- tap **TAB (or Arrow Keys)** repeatedly while holding SUPER to advance the selection (most-recently-used order, current window skipped). **SUPER+SHIFT+TAB** goes back.
-- **Mouse hover** highlights an item once the pointer moves; **click** activates it.
-- **SUPER+Q** quits the highlighted app.
-- **Release SUPER** to activate the selected window — which switches you to
-  that window's **workspace**.
-- Every item is a **still window snapshot** (captured when the switcher opens)
-  with the **app icon in the top-left corner**, arranged in a horizontal strip
-  centered on the screen.
-- Password managers, auth prompts and private browsing windows are **never
-  captured**; they show the app icon instead.
+- **SUPER+TAB** opens the switcher: one large icon per app, most recently used
+  first, with the selected app highlighted and its name below.
+- A **quick SUPER+TAB tap** jumps straight to the previous app without showing
+  the strip; tap again to jump back. The strip appears once SUPER is held for a
+  moment.
+- Tap **TAB (or the arrow keys)** while holding SUPER to advance the selection.
+  **SUPER+SHIFT+TAB** goes back.
+- **Mouse hover** highlights an app once the pointer moves; **click** activates it.
+- **SUPER+Q** quits the highlighted app (every window of it).
+- **Release SUPER** to activate the selection. The app's most recent window is
+  focused and raised, switching workspace if needed.
+- Windows of the same app share one icon, so switching between windows of one
+  app is left to your own binding.
 - Windows on special workspaces (scratchpads) are not listed.
-- Compatible with **Omarchy Themes**. 
+- Colors come from the Omarchy theme.
 
 ## Requirements
 
 - Omarchy with the Quickshell shell (`omarchy-shell`)
-- Hyprland ≥ 0.56 (Lua config) with the `hyprland-toplevel-export` /
-  screencopy support for live previews
+- Hyprland 0.56 or newer (Lua config)
 - `hyprctl` on PATH
 
 ## Installation
 
-Install it from this repository with the official Omarchy tooling:
-
 ```sh
-omarchy plugin add https://github.com/ewweberlin/QuickSwitch.git --enable
+omarchy plugin add https://github.com/fabriciopirini/QuickSwitch.git --enable
 ```
 
-This clones the repo into `~/.config/omarchy/plugins/`, and enables it.
-
-Bindings (enables SUPER + TAB) — add this line to `~/.config/hypr/bindings.lua`:
+Add this line to `~/.config/hypr/bindings.lua` to enable SUPER+TAB:
 
 ```lua
-dofile(os.getenv("HOME") .. "/.config/omarchy/plugins/ewweberlin.quickswitch/task-switch-bindings.lua")
+dofile(os.getenv("HOME") .. "/.config/omarchy/plugins/pirini.cmd-tab/task-switch-bindings.lua")
 ```
 
-Restart the shell, reload Hyprland and Bindings:
+If you prefer that plugin updates never change your Hyprland config, paste the
+contents of `task-switch-bindings.lua` into `bindings.lua` instead of the
+`dofile` line.
+
+If your `bindings.lua` unbinds SUPER+TAB itself, put the `dofile` line after
+that unbind.
+
+Restart the shell, reload Hyprland and check the bindings:
 
 ```sh
 omarchy restart shell
@@ -61,45 +60,34 @@ hyprctl configerrors   # should be clean
 hyprctl globalshortcuts
 ```
 
-The `SUPER + TAB` shortcut should appear in `hyprctl globalshortcuts`.
-
-If you prefer that plugin updates never change your Hyprland config, paste the
-contents of `task-switch-bindings.lua` into `bindings.lua` instead of the
-`dofile` line.
+The `SUPER + TAB` shortcut should appear in `hyprctl globalshortcuts`. After
+editing the plugin, use a full `omarchy restart shell`; the hot reload can leave
+stale code running.
 
 ### Removal
 
 ```sh
-omarchy plugin remove ewweberlin.quickswitch     # or: provide id interactively
-omarchy plugin disable ewweberlin.quickswitch    # disable without deleting
+omarchy plugin remove pirini.cmd-tab
+omarchy plugin disable pirini.cmd-tab    # disable without deleting
+omarchy plugin update pirini.cmd-tab     # update
 ```
-
-`plugin remove` unloads and disables the plugin, then handles each install
-flavor: it **unlinks** a symlinked checkout (source stays in place), **deletes**
-a cloned install, or **backs up** a plain folder. `plugin add` installs from
-git can be updated later with:
-
-```sh
-omarchy plugin update ewweberlin.quickswitch
-```
-
 
 ## Behavior details
 
 - **SUPER+TAB was already bound** in Omarchy to **"Next workspace"**
   (`hl.dsp.focus e+1`). The bindings file unbinds it first, so SUPER+TAB now
   opens the switcher. While the plugin is disabled or not loaded, SUPER+TAB
-  falls back to "Next workspace", so there is never a dead key. The other
-  workspace-shortcuts (`SUPER+SHIFT+TAB` outside the switcher, `SUPER+CTRL+TAB`)
-  are untouched.
+  falls back to "Next workspace", so there is never a dead key.
 - All in-switcher keys (TAB, SHIFT+TAB, arrows, Q, Esc) live in a Hyprland
-  submap named `quickswitch` that is only active while the strip is open, so
-  your own SUPER+arrow / SUPER+Q bindings keep working everywhere else.
-  **Esc** always leaves the submap, even if the shell has crashed.
-- **SUPER+Q** quits the highlighted app only while the switcher is open. For a
-  global close-this-window, **SUPER+W** already does that everywhere.
+  submap named `cmdtab` that is only active while the strip is open, so your
+  own SUPER+arrow / SUPER+Q bindings keep working everywhere else. **Esc**
+  always leaves the submap, even if the shell has crashed.
 - Releasing SUPER with **no item highlighted / pointer outside** the strip
   (Esc, or clicking empty space) closes without changing focus.
-- Colors come from the shell `Color` singleton, so the switcher follows the
-  active Omarchy theme automatically.
+- Floating windows are raised after focusing, so the chosen window is visible
+  even when windows overlap.
 
+## Credits and license
+
+MIT. The switcher logic and Hyprland bindings come from
+[ewweberlin/QuickSwitch](https://github.com/ewweberlin/QuickSwitch); see `LICENSE`.

@@ -31,33 +31,52 @@ function orderClients(clients) {
     return ordered;
 }
 
-// Windows whose content must never be screen-captured into a preview card
-// (password managers, auth prompts, private browsing). They get the icon
-// fallback instead of a snapshot.
-const SENSITIVE_CLASS = /keepass|1password|bitwarden|proton.?pass|enpass|pinentry|gcr-prompter|polkit|seahorse|kwallet|secrets|authenticator|signal|veracrypt/i;
-const SENSITIVE_TITLE = /private browsing|incognito|inprivate|privates? fenster|privater modus|inkognito|password|passwort|kennwort/i;
-
-function isSensitive(cls, title) {
-    return SENSITIVE_CLASS.test(String(cls || "")) || SENSITIVE_TITLE.test(String(title || ""));
-}
-
-// Group the cycle-ordered windows by workspace (ascending id), preserving the
-// global MRU order within each workspace. Returns [{ id, name, entries }].
-function groupByWorkspace(ordered) {
-    const groups = [];
-    const map = {};
+// One entry per app, like macOS Cmd+Tab. The most recent window of each app
+// class stands for the whole app (`address` is the window to focus) and
+// `addresses` lists every window of it. The active window's app keeps the last
+// slot, so the cycle still starts on the previous app. Input is the cycle order
+// from orderClients; entries are { address, addresses, cls, title }.
+function groupByApp(ordered) {
+    const apps = [];
+    const byCls = {};
+    let active = null;
 
     for (const c of ordered) {
-        const wsId = c.workspace.id;
-        if (!(wsId in map)) {
-            map[wsId] = { id: wsId, name: c.workspace.name, entries: [] };
-            groups.push(map[wsId]);
+        const cls = c.class || c.initialClass || "";
+        if (!(cls in byCls)) {
+            byCls[cls] = { address: c.address, addresses: [], cls: cls, title: c.title || "-" };
+            apps.push(byCls[cls]);
         }
-        map[wsId].entries.push(c);
+        byCls[cls].addresses.push(c.address);
+        if ((c.focusHistoryID === undefined ? 0 : c.focusHistoryID) === 0) active = c;
     }
 
-    groups.sort((a, b) => a.id - b.id);
-    return groups;
+    if (active) {
+        const cls = active.class || active.initialClass || "";
+        const entry = byCls[cls];
+        apps.splice(apps.indexOf(entry), 1);
+        entry.address = active.address;
+        entry.title = active.title || "-";
+        apps.push(entry);
+    }
+
+    return apps;
+}
+
+// Display name for an app class: the desktop entry's name, else the class itself.
+function appNameFor(DesktopEntries, cls) {
+    const raw = String(cls || "");
+    if (isSafeIconName(raw)) {
+        for (const v of [raw, raw.toLowerCase(), raw.replace(/-/g, ""), raw.split(".")[0]]) {
+            if (!isSafeIconName(v)) continue;
+            const e = DesktopEntries.byId(v);
+            if (e && e.name) return e.name;
+        }
+    }
+    for (const e of DesktopEntries.applications.values) {
+        if (e.startupClass && e.startupClass.toLowerCase() === raw.toLowerCase() && e.name) return e.name;
+    }
+    return raw;
 }
 
 // Icon cascade: desktop entry by id variants -> StartupWMClass scan ->
